@@ -4,12 +4,14 @@ type Props = {
   submissions: any[];
   onAdd: (id: string) => void;
   onReject: (id: string) => void;
+  onPlay?: (submission: any) => void;
 };
 
 export default function SubmissionGrid({
   submissions,
   onAdd,
   onReject,
+  onPlay,
 }: Props) {
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -20,6 +22,7 @@ export default function SubmissionGrid({
           onAdd={onAdd}
           onReject={onReject}
           isQueued
+          onPlay={onPlay}
         />
       ))}
     </div>

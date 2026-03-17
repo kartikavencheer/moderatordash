@@ -4,6 +4,7 @@ import FilterBar from "../components/FiltersPanel";
 import SceneNameModal from "../components/SceneNameModal";
 import SceneThumbnailBar from "../components/preview/SceneThumbnailBar";
 import SubmissionCard from "../components/SubmissionCard";
+import VideoPlayerModal from "../components/VideoPlayerModal";
 
 import {
   addToQueue,
@@ -28,6 +29,7 @@ const LIVE_ACTIVE_KEY = "fanwall_live_active_scene";
 const LIVE_EVENT_KEY = "fanwall_live_event_id";
 const LIVE_HISTORY_KEY = "fanwall_live_scene_history";
 const ARCHIVED_SCENES_KEY = "fanwall_archived_scene_ids";
+const RECYCLE_BIN_KEY_PREFIX = "fanwall_recycle_bin_event_";
 
 function readQueue(): string[] {
   try {
@@ -57,6 +59,22 @@ function writeList(key: string, value: string[]) {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
+function readRecycleBin(eventId: string): any[] {
+  if (!eventId) return [];
+  try {
+    const raw = localStorage.getItem(`${RECYCLE_BIN_KEY_PREFIX}${eventId}`);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeRecycleBin(eventId: string, items: any[]) {
+  if (!eventId) return;
+  localStorage.setItem(`${RECYCLE_BIN_KEY_PREFIX}${eventId}`, JSON.stringify(items));
+}
+
 export default function ModeratorDashboard() {
   const [events, setEvents] = useState<any[]>([]);
   const [teams, setTeams] = useState<any[]>([]);
@@ -65,6 +83,11 @@ export default function ModeratorDashboard() {
   const [queue, setQueue] = useState<any[]>([]);
   const [scenes, setScenes] = useState<any[]>([]);
   const [activeSceneId, setActiveSceneId] = useState("");
+  const [playerOpen, setPlayerOpen] = useState(false);
+  const [playerSubmission, setPlayerSubmission] = useState<any>(null);
+  const [recycleBin, setRecycleBin] = useState<any[]>([]);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
 
   const [showModal, setShowModal] = useState(false);
   const [creatingScene, setCreatingScene] = useState(false);
@@ -88,6 +111,7 @@ export default function ModeratorDashboard() {
       setSubmissions([]);
       setQueue([]);
       setScenes([]);
+      setRecycleBin([]);
       return;
     }
 
@@ -95,6 +119,7 @@ export default function ModeratorDashboard() {
     getCategories(filters.eventId).then(setCategories);
     reloadQueue(filters.eventId);
     loadScenes(filters.eventId);
+    setRecycleBin(readRecycleBin(filters.eventId));
   }, [filters.eventId]);
 
   useEffect(() => {
@@ -165,6 +190,11 @@ export default function ModeratorDashboard() {
     [queue],
   );
 
+  const recycleIds = useMemo(
+    () => new Set(recycleBin.map((s: any) => s?.submission_id).filter(Boolean)),
+    [recycleBin],
+  );
+
   const approvedSubmissions = useMemo(
     () => submissions.filter((item) => String(item?.status || "").toUpperCase() === "APPROVED").length,
     [submissions],
@@ -179,6 +209,54 @@ export default function ModeratorDashboard() {
     if (!filters.eventId) return;
     await addToQueue(filters.eventId, submissionId);
     await Promise.all([reloadSubmissions(), reloadQueue()]);
+  };
+
+  const handlePlaySubmission = (submission: any) => {
+    setPlayerSubmission(submission);
+    setPlayerOpen(true);
+  };
+
+  const handleDeleteClick = (submission: any) => {
+    setDeleteTarget(submission);
+    setDeleteModalOpen(true);
+  };
+
+  const moveToRecycleBin = () => {
+    if (!filters.eventId || !deleteTarget) return;
+    setRecycleBin((prev) => {
+      const id = deleteTarget?.submission_id;
+      const next = prev.some((x: any) => x?.submission_id === id) ? prev : [deleteTarget, ...prev];
+      writeRecycleBin(filters.eventId, next);
+      return next;
+    });
+    setDeleteModalOpen(false);
+    setDeleteTarget(null);
+  };
+
+  const restoreFromRecycleBin = (submissionId: string) => {
+    if (!filters.eventId) return;
+    setRecycleBin((prev) => {
+      const next = prev.filter((x: any) => x?.submission_id !== submissionId);
+      writeRecycleBin(filters.eventId, next);
+      return next;
+    });
+  };
+
+  const permanentlyDeleteTarget = async () => {
+    if (!deleteTarget) return;
+    const id = deleteTarget?.submission_id;
+    if (id) {
+      await handleReject(id);
+      if (filters.eventId) {
+        setRecycleBin((prev) => {
+          const next = prev.filter((x: any) => x?.submission_id !== id);
+          writeRecycleBin(filters.eventId, next);
+          return next;
+        });
+      }
+    }
+    setDeleteModalOpen(false);
+    setDeleteTarget(null);
   };
 
   const handleRemove = async (submissionId: string) => {
@@ -324,10 +402,7 @@ export default function ModeratorDashboard() {
           <div className="flex flex-col gap-8">
             <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
               <div className="max-w-3xl">
-                <div className="hero-chip mb-4">
-                  <Sparkles size={14} />
-                  Advanced Moderation UI
-                </div>
+               
                 <h1 className="text-4xl font-bold leading-tight text-white md:text-5xl">
                   Moderator command center for fast, confident live curation.
                 </h1>
@@ -439,7 +514,7 @@ export default function ModeratorDashboard() {
             <div className="flex-1 overflow-auto p-5 md:p-6">
               {submissions.length ? (
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                  {submissions.map((s) => {
+                  {submissions.filter((s) => !recycleIds.has(s.submission_id)).map((s) => {
                     const isQueued =
                       queueIds.has(s.submission_id) ||
                       Boolean(s.venueplayoutqueues && s.venueplayoutqueues.length > 0);
@@ -452,6 +527,8 @@ export default function ModeratorDashboard() {
                         onRemove={handleRemove}
                         onReject={handleReject}
                         isQueued={isQueued}
+                        onPlay={handlePlaySubmission}
+                        onDelete={handleDeleteClick}
                       />
                     );
                   })}
@@ -473,6 +550,74 @@ export default function ModeratorDashboard() {
           </section>
 
           <aside className="col-span-1 flex min-h-0 flex-col gap-6 xl:col-span-4">
+            <section className="glass-panel rounded-[32px] p-5 md:p-6">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <div className="section-title">Recycle Bin</div>
+                  <div className="section-subtitle">Restore clips or permanently delete them.</div>
+                </div>
+                <div className="hero-chip">{recycleBin.length} items</div>
+              </div>
+
+              {!recycleBin.length ? (
+                <div className="glass-soft rounded-[24px] px-5 py-6 text-sm text-white/55">
+                  Nothing in recycle bin.
+                </div>
+              ) : (
+                <div className="max-h-72 overflow-auto rounded-[24px] border border-white/8 bg-white/[0.03]">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 bg-slate-950/95 text-left text-[11px] uppercase tracking-[0.18em] text-white/45 backdrop-blur">
+                      <tr>
+                        <th className="px-4 py-3">Fan</th>
+                        <th className="px-4 py-3">Team</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recycleBin.map((s: any) => (
+                        <tr
+                          key={s?.submission_id}
+                          className="border-t border-white/8 text-white/80"
+                        >
+                          <td className="px-4 py-3">
+                            <div className="max-w-[160px] truncate font-medium">
+                              {s?.user?.full_name || "-"}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="max-w-[140px] truncate text-white/55">
+                              {s?.team?.name || "-"}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-white/55">{s?.status || "-"}</td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex justify-end gap-2">
+                              <button
+                                onClick={() => restoreFromRecycleBin(s?.submission_id)}
+                                className="rounded-full border border-cyan-300/20 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-500/20"
+                              >
+                                Restore
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setDeleteTarget(s);
+                                  setDeleteModalOpen(true);
+                                }}
+                                className="rounded-full border border-rose-300/20 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-100 transition hover:bg-rose-500/20"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </section>
+
             <section className="glass-panel rounded-[32px] p-5 md:p-6">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
@@ -570,6 +715,52 @@ export default function ModeratorDashboard() {
           onSubmit={handleCreateScene}
           scenes={scenes}
         />
+      )}
+
+      <VideoPlayerModal
+        open={playerOpen}
+        src={playerSubmission?.media_url ?? null}
+        title={playerSubmission?.user?.full_name || "Anonymous Fan"}
+        subtitle={playerSubmission?.team?.name || "Independent submission"}
+        status={playerSubmission?.status || "Pending"}
+        onClose={() => setPlayerOpen(false)}
+      />
+
+      {deleteModalOpen && (
+        <div
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-md"
+          onClick={() => setDeleteModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="glass-panel w-full max-w-md rounded-[32px] border border-white/10 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-lg font-semibold text-white">Delete this clip?</div>
+            <div className="mt-2 text-sm text-white/60">
+              Choose Recycle Bin to restore later, or permanently delete to remove it immediately.
+            </div>
+
+            <div className="mt-6 flex flex-col gap-3">
+              <button onClick={moveToRecycleBin} className="secondary-button w-full">
+                Move to Recycle Bin
+              </button>
+              <button onClick={permanentlyDeleteTarget} className="danger-button w-full">
+                Permanently Delete
+              </button>
+              <button
+                onClick={() => {
+                  setDeleteModalOpen(false);
+                  setDeleteTarget(null);
+                }}
+                className="secondary-button w-full"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

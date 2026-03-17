@@ -1,5 +1,7 @@
 import { Archive, Eye, Radio, Trash2 } from "lucide-react";
 import type React from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { getSceneDetails } from "../../api/moderatorApi";
 
 type Props = {
   scenes: any[];
@@ -11,6 +13,36 @@ type Props = {
   onArchive?: (id: string) => void;
 };
 
+function getSceneMedia(scene: any) {
+  const candidates: any[] = []
+    .concat(scene?.submissions || [])
+    .concat(scene?.tiles || [])
+    .concat(scene?.scene_tiles || [])
+    .concat(scene?.media || []);
+
+  return candidates
+    .map((item: any) => ({
+      key: String(item?.tile_id || item?.submission_id || item?.id || Math.random()),
+      thumb:
+        item?.thumbnail_url ||
+        item?.thumbnail ||
+        item?.thumb_url ||
+        item?.submission?.thumbnail_url ||
+        item?.submission?.thumbnail ||
+        null,
+      url:
+        item?.media_url ||
+        item?.url ||
+        item?.media ||
+        item?.mediaUrl ||
+        item?.submission?.media_url ||
+        item?.submission?.url ||
+        null,
+      type: String(item?.media_type || item?.type || "").toUpperCase(),
+    }))
+    .filter((x) => x.thumb || x.url);
+}
+
 export default function SceneThumbnailBar({
   scenes,
   activeSceneId,
@@ -20,6 +52,41 @@ export default function SceneThumbnailBar({
   onLive,
   onArchive,
 }: Props) {
+  const [sceneDetails, setSceneDetails] = useState<Record<string, any[]>>({});
+  const requestedRef = useRef(new Set<string>());
+
+  const visibleSceneIds = useMemo(() => scenes.map((s) => String(s.scene_id)), [scenes]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchDetails = async () => {
+      // Keep it lightweight: fetch details for the first few scenes only.
+      // More can be fetched on-demand later if needed.
+      const idsToFetch = visibleSceneIds
+        .slice(0, 12)
+        .filter((id) => id && !sceneDetails[id] && !requestedRef.current.has(id));
+
+      for (const id of idsToFetch) {
+        requestedRef.current.add(id);
+        try {
+          const details = await getSceneDetails(id);
+          if (cancelled) return;
+          // API sometimes returns {data: [...]}, sometimes just [...]
+          const tiles = Array.isArray(details) ? details : details?.data || details?.value || [];
+          setSceneDetails((prev) => ({ ...prev, [id]: tiles }));
+        } catch {
+          // ignore; fallback UI will render
+        }
+      }
+    };
+
+    void fetchDetails();
+    return () => {
+      cancelled = true;
+    };
+  }, [visibleSceneIds, sceneDetails]);
+
   const statusColor: Record<string, string> = {
     READY: "bg-blue-500",
     QUEUED: "bg-yellow-500",
@@ -60,6 +127,19 @@ export default function SceneThumbnailBar({
         const normalizedStatus = String(scene.status || "").toUpperCase();
         const uiStatus = normalizedStatus || "UNKNOWN";
         const isArchived = normalizedStatus === "ARCHIVED";
+        const details = sceneDetails[String(scene.scene_id)];
+        const rawMedia = getSceneMedia(details?.length ? { ...scene, tiles: details } : scene);
+        const media = Array.from(
+          new Map(rawMedia.map((m) => [m.thumb || m.url, m])).values(),
+        );
+
+        const maxCells = 16; // keep thumbnail lightweight (up to 4x4)
+        const visibleCount = Math.min(media.length, maxCells);
+        const gridSize = Math.min(4, Math.max(1, Math.ceil(Math.sqrt(visibleCount || 1))));
+        const gridCols = gridSize;
+        const gridRows = gridSize;
+        const gridItems = media.slice(0, gridSize * gridSize);
+        const remaining = Math.max(0, media.length - gridItems.length);
 
         return (
           <button
@@ -76,7 +156,48 @@ export default function SceneThumbnailBar({
             `}
           >
             <div className="glass-soft relative h-52 w-full overflow-hidden">
-              {scene.thumbnail ? (
+              {gridItems.length ? (
+                <div
+                  className="h-full w-full overflow-hidden"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${gridCols}, 1fr)`,
+                    gridTemplateRows: `repeat(${gridRows}, 1fr)`,
+                    gap: "2px",
+                  }}
+                >
+                  {gridItems.map((item) =>
+                    item.thumb ? (
+                      <img
+                        key={item.key}
+                        src={item.thumb}
+                        alt={scene.name}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <video
+                        key={item.key}
+                        src={item.url}
+                        muted
+                        playsInline
+                        preload="metadata"
+                        className="h-full w-full object-cover"
+                      />
+                    ),
+                  )}
+                </div>
+              ) : !details && scene.thumbnail ? (
+                <img
+                  src={scene.thumbnail}
+                  alt={scene.name}
+                  className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.03]"
+                />
+              ) : !details ? (
+                <div className="flex h-full w-full items-center justify-center bg-slate-950 text-xs text-gray-400">
+                  Loading grid...
+                </div>
+              ) : scene.thumbnail ? (
                 <img
                   src={scene.thumbnail}
                   alt={scene.name}
@@ -89,6 +210,12 @@ export default function SceneThumbnailBar({
               )}
 
               <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/20 to-transparent" />
+
+              {remaining > 0 && (
+                <div className="absolute bottom-14 right-3 rounded-full border border-white/10 bg-black/45 px-3 py-1 text-[10px] font-semibold text-white/80 backdrop-blur">
+                  +{remaining}
+                </div>
+              )}
 
               <div
                 className={`
